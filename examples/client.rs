@@ -10,7 +10,7 @@ pub async fn main() -> Result<(), Box<dyn Error>> {
     let _ = env_logger::try_init();
 
     let tcp = TcpStream::connect("127.0.0.1:5928").await?;
-    let (mut client, h2) = client::handshake(tcp).await?;
+    let (client, h2) = client::handshake(tcp).await?;
 
     println!("sending request");
 
@@ -18,11 +18,18 @@ pub async fn main() -> Result<(), Box<dyn Error>> {
         .uri("https://http2.akamai.com/")
         .body(())
         .unwrap();
+    let request2 = Request::builder()
+        .uri("https://http2.akamai.com/")
+        .body(())
+        .unwrap();
 
     let mut trailers = HeaderMap::new();
     trailers.insert("zomg", "hello".parse().unwrap());
 
-    let (response, mut stream) = client.send_request(request, false).unwrap();
+    let mut client = client.ready().await?;
+    let (response, mut stream) = client.send_request(request, false)?;
+    let mut client = client.ready().await?;
+    let (response2, _) = client.send_request(request2, false)?;
 
     // send trailers
     stream.send_trailers(trailers).unwrap();
@@ -34,8 +41,10 @@ pub async fn main() -> Result<(), Box<dyn Error>> {
         }
     });
 
-    let response = response.await?;
+    let (response, response2) = futures::join!(response, response2);
+    let (response, response2) = (response?, response2?);
     println!("GOT RESPONSE: {:?}", response);
+    println!("GOT RESPONSE 2: {:?}", response2);
 
     // Get the body
     let mut body = response.into_body();

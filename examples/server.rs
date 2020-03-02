@@ -24,7 +24,9 @@ async fn main() -> Result<(), Box<dyn Error + Send + Sync>> {
 }
 
 async fn handle(socket: TcpStream) -> Result<(), Box<dyn Error + Send + Sync>> {
-    let mut connection = server::handshake(socket).await?;
+    let mut connection = server::Builder::new()
+        .max_concurrent_streams(1)
+        .handshake(socket).await?;
     println!("H2 connection bound");
 
     while let Some(result) = connection.accept().await {
