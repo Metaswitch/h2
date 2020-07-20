@@ -12,6 +12,13 @@ pub async fn main() -> Result<(), Box<dyn Error>> {
     let tcp = TcpStream::connect("127.0.0.1:5928").await?;
     let (client, h2) = client::handshake(tcp).await?;
 
+    // Spawn a task to run the conn...
+    tokio::spawn(async move {
+        if let Err(e) = h2.await {
+            println!("GOT ERR={:?}", e);
+        }
+    });
+
     println!("sending request");
 
     let request = Request::builder()
@@ -35,13 +42,6 @@ pub async fn main() -> Result<(), Box<dyn Error>> {
 
     // send trailers
     stream.send_trailers(trailers).unwrap();
-
-    // Spawn a task to run the conn...
-    tokio::spawn(async move {
-        if let Err(e) = h2.await {
-            println!("GOT ERR={:?}", e);
-        }
-    });
 
     let (response, response2) = futures::join!(response, response2);
     let (response, response2) = (response?, response2?);
