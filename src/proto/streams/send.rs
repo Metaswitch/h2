@@ -18,6 +18,15 @@ pub(super) struct Send {
     /// Stream identifier to use for next initialized stream.
     next_stream_id: Result<StreamId, StreamIdOverflow>,
 
+    /// Any streams with a higher ID are ignored.
+    ///
+    /// This starts as MAX, but is lowered when a GOAWAY is received.
+    ///
+    /// > After sending a GOAWAY frame, the sender can discard frames for
+    /// > streams initiated by the receiver with identifiers higher than
+    /// > the identified last stream.
+    max_stream_id: StreamId,
+
     /// Initial window size of locally initiated streams
     init_window_sz: WindowSize,
 
@@ -37,6 +46,7 @@ impl Send {
     pub fn new(config: &Config) -> Self {
         Send {
             init_window_sz: config.remote_init_window_sz,
+            max_stream_id: StreamId::MAX,
             next_stream_id: Ok(config.local_next_stream_id),
             prioritize: Prioritize::new(config),
         }
@@ -67,11 +77,11 @@ impl Send {
             || fields.contains_key("keep-alive")
             || fields.contains_key("proxy-connection")
         {
-            log::debug!("illegal connection-specific headers found");
+            tracing::debug!("illegal connection-specific headers found");
             return Err(UserError::MalformedHeaders);
         } else if let Some(te) = fields.get(http::header::TE) {
             if te != "trailers" {
-                log::debug!("illegal connection-specific headers found");
+                tracing::debug!("illegal connection-specific headers found");
                 return Err(UserError::MalformedHeaders);
             }
         }
@@ -85,7 +95,7 @@ impl Send {
         stream: &mut store::Ptr,
         task: &mut Option<Waker>,
     ) -> Result<(), UserError> {
-        log::trace!(
+        tracing::trace!(
             "send_push_promise; frame={:?}; init_window={:?}",
             frame,
             self.init_window_sz
@@ -108,7 +118,7 @@ impl Send {
         counts: &mut Counts,
         task: &mut Option<Waker>,
     ) -> Result<(), UserError> {
-        log::trace!(
+        tracing::trace!(
             "send_headers; frame={:?}; init_window={:?}",
             frame,
             self.init_window_sz
@@ -157,7 +167,7 @@ impl Send {
         let is_closed = stream.state.is_closed();
         let is_empty = stream.pending_send.is_empty();
 
-        log::trace!(
+        tracing::trace!(
             "send_reset(..., reason={:?}, stream={:?}, ..., \
              is_reset={:?}; is_closed={:?}; pending_send.is_empty={:?}; \
              state={:?} \
@@ -172,7 +182,7 @@ impl Send {
 
         if is_reset {
             // Don't double reset
-            log::trace!(
+            tracing::trace!(
                 " -> not sending RST_STREAM ({:?} is already reset)",
                 stream.id
             );
@@ -185,7 +195,7 @@ impl Send {
         // If closed AND the send queue is flushed, then the stream cannot be
         // reset explicitly, either. Implicit resets can still be queued.
         if is_closed && is_empty {
-            log::trace!(
+            tracing::trace!(
                 " -> not sending explicit RST_STREAM ({:?} was closed \
                  and send queue was flushed)",
                 stream.id
@@ -201,7 +211,7 @@ impl Send {
 
         let frame = frame::Reset::new(stream.id, reason);
 
-        log::trace!("send_reset -- queueing; frame={:?}", frame);
+        tracing::trace!("send_reset -- queueing; frame={:?}", frame);
         self.prioritize
             .queue_frame(frame.into(), buffer, stream, task);
         self.prioritize.reclaim_all_capacity(stream, counts);
@@ -259,7 +269,7 @@ impl Send {
 
         stream.state.send_close();
 
-        log::trace!("send_trailers -- queuing; frame={:?}", frame);
+        tracing::trace!("send_trailers -- queuing; frame={:?}", frame);
         self.prioritize
             .queue_frame(frame.into(), buffer, stream, task);
 
@@ -360,13 +370,33 @@ impl Send {
         task: &mut Option<Waker>,
     ) -> Result<(), Reason> {
         if let Err(e) = self.prioritize.recv_stream_window_update(sz, stream) {
-            log::debug!("recv_stream_window_update !!; err={:?}", e);
+            tracing::debug!("recv_stream_window_update !!; err={:?}", e);
 
             self.send_reset(Reason::FLOW_CONTROL_ERROR, buffer, stream, counts, task);
 
             return Err(e);
         }
 
+        Ok(())
+    }
+
+    pub(super) fn recv_go_away(&mut self, last_stream_id: StreamId) -> Result<(), RecvError> {
+        if last_stream_id > self.max_stream_id {
+            // The remote endpoint sent a `GOAWAY` frame indicating a stream
+            // that we never sent, or that we have already terminated on account
+            // of previous `GOAWAY` frame. In either case, that is illegal.
+            // (When sending multiple `GOAWAY`s, "Endpoints MUST NOT increase
+            // the value they send in the last stream identifier, since the
+            // peers might already have retried unprocessed requests on another
+            // connection.")
+            proto_err!(conn:
+                "recv_go_away: last_stream_id ({:?}) > max_stream_id ({:?})",
+                last_stream_id, self.max_stream_id,
+            );
+            return Err(RecvError::Connection(Reason::PROTOCOL_ERROR));
+        }
+
+        self.max_stream_id = last_stream_id;
         Ok(())
     }
 
@@ -413,7 +443,7 @@ impl Send {
             if val < old_val {
                 // We must decrease the (remote) window on every open stream.
                 let dec = old_val - val;
-                log::trace!("decrementing all windows; dec={}", dec);
+                tracing::trace!("decrementing all windows; dec={}", dec);
 
                 let mut total_reclaimed = 0;
                 store.for_each(|mut stream| {
@@ -439,7 +469,7 @@ impl Send {
                         0
                     };
 
-                    log::trace!(
+                    tracing::trace!(
                         "decremented stream window; id={:?}; decr={}; reclaimed={}; flow={:?}",
                         stream.id,
                         dec,

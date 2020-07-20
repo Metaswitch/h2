@@ -204,6 +204,12 @@ impl Store {
     }
 }
 
+// While running h2 unit/integration tests, enable this debug assertion.
+//
+// In practice, we don't need to ensure this. But the integration tests
+// help to make sure we've cleaned up in cases where we could (like, the
+// runtime isn't suddenly dropping the task for unknown reasons).
+#[cfg(feature = "unstable")]
 impl Drop for Store {
     fn drop(&mut self) {
         use std::thread;
@@ -238,10 +244,10 @@ where
     ///
     /// If the stream is already contained by the list, return `false`.
     pub fn push(&mut self, stream: &mut store::Ptr) -> bool {
-        log::trace!("Queue::push");
+        tracing::trace!("Queue::push");
 
         if N::is_queued(stream) {
-            log::trace!(" -> already queued");
+            tracing::trace!(" -> already queued");
             return false;
         }
 
@@ -253,7 +259,7 @@ where
         // Queue the stream
         match self.indices {
             Some(ref mut idxs) => {
-                log::trace!(" -> existing entries");
+                tracing::trace!(" -> existing entries");
 
                 // Update the current tail node to point to `stream`
                 let key = stream.key();
@@ -263,7 +269,7 @@ where
                 idxs.tail = stream.key();
             }
             None => {
-                log::trace!(" -> first entry");
+                tracing::trace!(" -> first entry");
                 self.indices = Some(store::Indices {
                     head: stream.key(),
                     tail: stream.key(),
