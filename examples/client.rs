@@ -29,7 +29,9 @@ pub async fn main() -> Result<(), Box<dyn Error>> {
     let mut client = client.ready().await?;
     let (response, mut stream) = client.send_request(request, false)?;
     let mut client = client.ready().await?;
-    let (response2, _) = client.send_request(request2, false)?;
+    let (response2, _) = client.send_request(request2, true)?;
+
+    stream.send_data(bytes::Bytes::from(&b"hello"[..]), false)?;
 
     // send trailers
     stream.send_trailers(trailers).unwrap();
